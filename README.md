@@ -1,9 +1,10 @@
 pdf-title-rename
 ----------------
+A fork of [jdmonaco/pdf-title-rename](https://github.com/jdmonaco/pdf-title-rename)
 
 A batch-renaming script for PDF files based on the Title and Author information in the metadata and XMP. The XMP metadata, if available, supersedes the standard PDF metadata. The output format is currently:
 
-    [FirstAuthorLastName [LastAuthorLastName ]- ][SanitizedTitleText].pdf
+    [Sanitized.Title.Text]-[First.Author.LastName].pdf
 
 Only the article title is used if no author information is found. First and last author surnames are used if the `creator` field in the XMP is a list of more than one author. 
 

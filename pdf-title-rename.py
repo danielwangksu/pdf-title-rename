@@ -18,8 +18,10 @@ DATE = '2017-07-15'
 
 import os
 import sys
+import glob
 import argparse
 import subprocess
+import re
 
 # PDF and metadata libraries
 from pdfminer.pdfparser import PDFParser, PDFSyntaxError
@@ -36,7 +38,14 @@ class RenamePDFsByTitle(object):
     """
 
     def __init__(self, args):
-        self.pdf_files = args.files
+        self.pdf_files = []
+        self.skip_subdir = args.skip_subdir
+        for f in args.files:
+            if os.path.isdir(f):
+                self._handle_directory(f)
+            if os.path.isfile(f):
+                self._handle_file(f)
+
         self.dry_run = args.dry_run
         self.interactive = args.interactive
         self.destination = None
@@ -44,7 +53,24 @@ class RenamePDFsByTitle(object):
             if os.path.isdir(args.destination):
                 self.destination = args.destination
             else:
+                self.destination = None
                 print('warning: destination is not a valid directory')
+        if len(self.pdf_files) == 0:
+            print('No PDF file found')
+            return
+
+    def _handle_directory(self, path):
+        for root, dirs, files in os.walk(path):
+            for file in files:
+                self._handle_file(os.path.join(root, file))
+            if self.skip_subdir == False:
+                for dir in dirs:
+                    self._handle_directory(os.path.join(root, dir))
+
+    def _handle_file(self, path):
+        ext = os.path.splitext(path)[-1].lower()
+        if ext == ".pdf":
+            self.pdf_files.append(path)
 
     def main(self):
         """Entry point for running the script."""
@@ -108,12 +134,17 @@ class RenamePDFsByTitle(object):
     def _new_filename(self, title, author):
         n = self._sanitize(title)
         if author:
-            n = '%s - %s' % (self._sanitize(author), n)
+            n = '%s - %s' % (n, self._sanitize(author))
+        n = ".".join(n.split())
+        # pattern = re.compile()
+        # n = pattern.sub(r'\1' , n)
+        n = re.sub(r'\.([.^$*&%#@!+?{}|()-=_]+)\.', r'\1', n)
         n = '%s.pdf' % n[:250]  # limit filenames to ~255 chars
         return n
 
     def _sanitize(self, s):
-        keep = [' ', '.', '_', '-', '\u2014']
+        s = re.sub(r'([^\w])\1+', r'\1', s)
+        keep = [' ', '_', '-', '\u2014']
         return "".join(c for c in s if c.isalnum() or c in keep).strip()
 
     def _get_info(self, fn):
@@ -140,7 +171,7 @@ class RenamePDFsByTitle(object):
                 except UnicodeDecodeError:
                     print(' -- Could not decode author bytes: %r' % au)
 
-            if 'Metadata' in self.doc.catalog:
+            if self.doc != None and 'Metadata' in self.doc.catalog:
                 xmpt, xmpa = self._get_xmp_metadata()
                 xmpt = self._resolve_objref(xmpt)
                 xmpa = self._resolve_objref(xmpa)
@@ -151,8 +182,20 @@ class RenamePDFsByTitle(object):
 
         if type(title) is str:
             title = title.strip()
-            if title.lower() == 'untitled':
+            if title.lower() == 'untitled' or len(title) == 0:
                 title = None
+
+        if type(title) is list:
+            if len(title) == 1 and title[0].isspace():
+                title = None
+
+        if type(author) is list:
+            if len(author) == 1 and author[0].isspace():
+                author = None
+
+        if type(author) is str:
+            if author.isspace():
+                author = None
 
         if self.interactive:
             title, author = self._interactive_info_query(fn, title, author)
@@ -189,6 +232,9 @@ class RenamePDFsByTitle(object):
             doc = self.doc = PDFDocument(parser)
         except PDFSyntaxError:
             return {}
+        except:
+            self.doc = None
+            return {}
         parser.set_document(doc)
 
         if not hasattr(doc, 'info') or len(doc.info) == 0:
@@ -197,7 +243,10 @@ class RenamePDFsByTitle(object):
 
     def _get_xmp_metadata(self):
         t = a = None
-        metadata = resolve1(self.doc.catalog['Metadata']).get_data()
+        try:
+            metadata = resolve1(self.doc.catalog['Metadata']).get_data()
+        except:
+            return t, a
         try:
             md = xmp_to_dict(metadata)
         except:
@@ -228,7 +277,7 @@ class RenamePDFsByTitle(object):
             a = list(filter(bool, a))  # remove None, empty strings, ...
             if len(a) > 1:
                 a = '%s %s' % (self._au_last_name(a[0]), self._au_last_name(a[-1]))
-            elif len(a) == 1:
+            elif len(a) == 1 and not a[0].isspace():
                 a = self._au_last_name(a[0])
             else:
                 a = None
@@ -249,6 +298,8 @@ if __name__ == "__main__":
                         help='interactive mode')
     parser.add_argument('-d', '--dest', dest='destination',
                         help='destination folder for renamed files')
+    parser.add_argument('-s', '--skip', dest='skip_subdir', action='store_true',
+                        help='skip sub-directory')
     args = parser.parse_args()
     sys.exit(RenamePDFsByTitle(args).main())
 
