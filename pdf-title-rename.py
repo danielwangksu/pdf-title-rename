@@ -55,17 +55,20 @@ class RenamePDFsByTitle(object):
             else:
                 self.destination = None
                 print('warning: destination is not a valid directory')
+        print(self.pdf_files)
         if len(self.pdf_files) == 0:
             print('No PDF file found')
             return
 
     def _handle_directory(self, path):
-        for root, dirs, files in os.walk(path):
-            for file in files:
-                self._handle_file(os.path.join(root, file))
-            if self.skip_subdir == False:
-                for dir in dirs:
-                    self._handle_directory(os.path.join(root, dir))
+        root = path
+        for item in os.listdir(path):
+            if os.path.isfile(os.path.join(root, item)):
+                self._handle_file(os.path.join(root, item))
+                continue
+            if os.path.isdir(os.path.join(root, item)):
+                if self.skip_subdir == False:                
+                    self._handle_directory(os.path.join(root, item))
 
     def _handle_file(self, path):
         ext = os.path.splitext(path)[-1].lower()
