@@ -11,17 +11,14 @@ Requirements:
 """
 
 
-NAME = 'pdf-title-rename'
-VERSION = '0.1.0'
-DATE = '2017-07-15'
-
-
 import os
 import sys
 import glob
 import argparse
 import subprocess
 import re
+import shutil
+from hashlib import md5
 
 # PDF and metadata libraries
 from pdfminer.pdfparser import PDFParser, PDFSyntaxError
@@ -29,6 +26,26 @@ from pdfminer.pdfdocument import PDFDocument
 from pdfminer.pdftypes import resolve1
 from xmp import xmp_to_dict
 
+
+def recursive_copy(src, dest):
+    try:
+        os.mkdir(dest)
+    except:
+        pass
+    if os.path.isfile(src):
+        shutil.copy(src, dest)
+    elif os.path.isdir(src):
+        for item in os.listdir(src):
+            file = os.path.join(src, item)
+            if os.path.isfile(file):
+                shutil.copy(file, dest)
+            if os.path.isdir(file):
+                sub_dir = os.path.join(dest, item)
+                try:
+                    os.mkdir(sub_dir)
+                except:
+                    pass
+                recursive_copy(file, sub_dir)
 
 class RenamePDFsByTitle(object):
 
@@ -40,35 +57,51 @@ class RenamePDFsByTitle(object):
     def __init__(self, args):
         self.pdf_files = []
         self.skip_subdir = args.skip_subdir
-        for f in args.files:
-            if os.path.isdir(f):
-                self._handle_directory(f)
-            if os.path.isfile(f):
-                self._handle_file(f)
-
         self.dry_run = args.dry_run
+        self.hash = args.hash
+        self.safe_mode = args.safe_mode
         self.interactive = args.interactive
         self.destination = None
+
+        # if safe mode is specified copy everything to safe mode directory
+        if self.safe_mode and not os.path.exists(self.safe_mode):
+            for file in args.files:
+                recursive_copy(file, self.safe_mode)
+            args.files = [self.safe_mode]
+        else:
+            print("Error: the safe mode path already exists")
+            return
+
+        # traverse directory to build a list
+        for f in args.files:
+            if os.path.isdir(f):
+                print(f)
+                self._handle_directory(f)
+            if os.path.isfile(f):
+                print(f)
+                self._handle_file(f)
+
+        if len(self.pdf_files) == 0:
+            print('Error: No PDF file found')
+            return
+
         if args.destination:
             if os.path.isdir(args.destination):
                 self.destination = args.destination
             else:
                 self.destination = None
-                print('warning: destination is not a valid directory')
-        print(self.pdf_files)
-        if len(self.pdf_files) == 0:
-            print('No PDF file found')
-            return
+                print('Warning: destination is not a valid directory')
 
     def _handle_directory(self, path):
         root = path
         for item in os.listdir(path):
-            if os.path.isfile(os.path.join(root, item)):
-                self._handle_file(os.path.join(root, item))
+            item = os.path.join(root, item)
+            if os.path.isfile(item):
+                self._handle_file(item)
                 continue
-            if os.path.isdir(os.path.join(root, item)):
-                if self.skip_subdir == False:                
-                    self._handle_directory(os.path.join(root, item))
+            if os.path.isdir(item):
+                if self.skip_subdir == False:
+                    self._handle_directory(item)
 
     def _handle_file(self, path):
         ext = os.path.splitext(path)[-1].lower()
@@ -86,7 +119,10 @@ class RenamePDFsByTitle(object):
         for f in self.pdf_files:
             root, ext = os.path.splitext(f)
             path, base = os.path.split(root)
+            original_name = base + ext
             print('Processing "%s":' % f)
+            if self.hash or self.safe_mode:
+                hash = md5(f.encode('utf-8')).hexdigest()
 
             # Parse standard and XMP metadata, then go interactive if specified
             title, author = self._get_info(f)
@@ -96,19 +132,25 @@ class RenamePDFsByTitle(object):
                 title = base
 
             if not (author or title):
-                print(' -- Could not find metadata in the file')
+                print('  -- Could not find metadata in the file')
                 Nmissing += 1
                 continue
-
-            newf = os.path.join(path, self._new_filename(title, author))
-            print(' -- Renaming to "%s"' % newf)
+            if self.hash or self.safe_mode:
+                newf = os.path.join(path, self._new_filename(title, author, hash))
+            else:
+                newf = os.path.join(path, self._new_filename(title, author))
+            print('  -- Renaming to "%s"' % newf)
             if self.dry_run:
                 continue
 
             try:
+                if self.safe_mode:
+                    original_name = "[" + hash[:5] + "]-" + original_name
+                    print(os.path.join(path, original_name))
+                    shutil.copy(f, os.path.join(path, original_name))
                 os.rename(f, newf)
             except OSError:
-                print(' -- Error renaming file, maybe it moved?')
+                print('  -- Error renaming file, maybe it moved?')
                 Nerrors += 1
                 continue
             else:
@@ -116,25 +158,25 @@ class RenamePDFsByTitle(object):
 
             if self.destination:
                 if subprocess.call(['mv', newf, self.destination]) == 0:
-                    print(' -- Filed to', self.destination)
+                    print('  -- Filed to', self.destination)
                     Nfiled += 1
                 else:
-                    print(' -- Error moving file')
+                    print('  -- Error moving file')
                     Nerrors += 1
 
         if self.dry_run:
             print('Processed %d files [dry run]:' % Ntot)
         else:
             print('Processed %d files:' % Ntot)
-        print(' - Renamed: %d' % Nrenamed)
+        print('  - Renamed: %d' % Nrenamed)
         if self.destination:
-            print(' - Filed: %d' % Nfiled)
-        print(' - Missing metadata: %d' % Nmissing)
-        print(' - Errors: %d' % Nerrors)
+            print('  - Filed: %d' % Nfiled)
+        print('  - Missing metadata: %d' % Nmissing)
+        print('  - Errors: %d' % Nerrors)
 
         return 0
 
-    def _new_filename(self, title, author):
+    def _new_filename(self, title, author, hash=None):
         n = self._sanitize(title)
         if author:
             n = '%s - %s' % (n, self._sanitize(author))
@@ -143,6 +185,8 @@ class RenamePDFsByTitle(object):
         # n = pattern.sub(r'\1' , n)
         n = re.sub(r'\.([.^$*&%#@!+?{}|()-=_]+)\.', r'\1', n)
         n = '%s.pdf' % n[:250]  # limit filenames to ~255 chars
+        if hash is not None:
+            n = "[" + hash[:5] + "]-" + n
         return n
 
     def _sanitize(self, s):
@@ -174,7 +218,9 @@ class RenamePDFsByTitle(object):
                 except UnicodeDecodeError:
                     print(' -- Could not decode author bytes: %r' % au)
 
+            # print(self.doc.catalog)
             if self.doc != None and 'Metadata' in self.doc.catalog:
+                # print(True)
                 xmpt, xmpa = self._get_xmp_metadata()
                 xmpt = self._resolve_objref(xmpt)
                 xmpa = self._resolve_objref(xmpa)
@@ -192,12 +238,13 @@ class RenamePDFsByTitle(object):
             if len(title) == 1 and title[0].isspace():
                 title = None
 
-        if type(author) is list:
-            if len(author) == 1 and author[0].isspace():
+        if type(author) is str:
+            author = author.strip()
+            if len(author) == 0:
                 author = None
 
-        if type(author) is str:
-            if author.isspace():
+        if type(author) is list:
+            if len(author) == 1 and author[0].isspace():
                 author = None
 
         if self.interactive:
@@ -299,8 +346,12 @@ if __name__ == "__main__":
                         help='dry-run listing of filename changes')
     parser.add_argument('-i', dest='interactive', action='store_true',
                         help='interactive mode')
-    parser.add_argument('-d', '--dest', dest='destination',
+    parser.add_argument('-d', '--dest', dest='destination', type=str,
                         help='destination folder for renamed files')
+    parser.add_argument('-p', '--prepend-hash', dest='hash', action='store_true',
+                        help='prepend md5 hash in front of file name')
+    parser.add_argument('-S', '--safe', dest='safe_mode', type=str,
+                        help='run with duplicated data')
     parser.add_argument('-s', '--skip', dest='skip_subdir', action='store_true',
                         help='skip sub-directory')
     args = parser.parse_args()
